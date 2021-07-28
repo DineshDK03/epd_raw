@@ -47,64 +47,6 @@ const struct device *rst;
 const struct device *busy;
 const struct device *cs;
 
-static void spi_init(void)
-{
-        spi_dev = device_get_binding(SPI_DEV);
-
-	if (spi_dev == NULL) {
-		printk("Could not get %s device\n", SPI_DEV);
-		return;
-	}
-        spi_cfg.operation = SPI_OP_MODE_MASTER | SPI_WORD_SET(8);
-        spi_cfg.frequency = 4000000;
-        spi_cfg.slave = 0;
-        spi_cfg.cs = NULL;
-
-	printk("SPI Initialized\n");
-
-        busy = device_get_binding(BUSY_DEV);
-        if (busy == NULL) {
-                return;
-        }
-
-        rst = device_get_binding(RST_DEV);
-        if (rst == NULL) {
-                return;
-        }
-
-        dc = device_get_binding(DC_DEV);
-        if (dc == NULL) {
-                return;
-        }
-
-        cs = device_get_binding(CS_DEV);
-        if (cs == NULL) {
-                return;
-        }
-
-        gpio_pin_configure(rst, RST_PIN,
-               GPIO_OUTPUT_INACTIVE | RST_FLAGS);
-
-        gpio_pin_configure(dc, DC_PIN,
-               GPIO_OUTPUT_INACTIVE | DC_FLAGS);
-
-        gpio_pin_configure(busy, BUSY_PIN,
-               GPIO_INPUT | BUSY_FLAGS);
-
-
-        cs_ctrl.gpio_dev = cs;
-        if (!cs_ctrl.gpio_dev) {
-          printk("Unable to get SPI GPIO CS device");
-          return;
-        }
-
-        cs_ctrl.gpio_pin = CS_PIN;
-        cs_ctrl.gpio_dt_flags = CS_FLAGS;
-        cs_ctrl.delay = 0U;
-        spi_cfg.cs = &cs_ctrl;
-        printk("SPI Setup done\n");
-}
-
 static const unsigned char EPD_2in7_lut_vcom_dc[] = {
     0x00	,0x00,
     0x00	,0x08	,0x00	,0x00	,0x00	,0x02,
@@ -152,8 +94,12 @@ static const unsigned char EPD_2in7_lut_wb[] = {
     0x00	,0x00	,0x00	,0x00	,0x00	,0x00,
 };
 
-static void send_command(uint8_t cmd)
+static void send_command(const struct device *dc, const struct device *cs, uint8_t cmd)
 {
+        dc = device_get_binding(DC_DEV);
+        gpio_pin_configure(dc, DC_PIN,
+               GPIO_OUTPUT | DC_FLAGS);
+
         struct spi_buf buffers = {.buf = &cmd, .len = sizeof(cmd)};
         struct spi_buf_set buf_set = {.buffers = &buffers, .count = 1};
 
@@ -166,8 +112,12 @@ static void send_command(uint8_t cmd)
         gpio_pin_set(cs, CS_PIN, 1);
 }
 
-static void send_data(uint8_t data)
+static void send_data(const struct device *dc, const struct device *cs,uint8_t data)
 {
+        dc = device_get_binding(DC_DEV);
+        gpio_pin_configure(dc, DC_PIN,
+               GPIO_OUTPUT | DC_FLAGS);
+
         struct spi_buf buffers = {.buf = &data, .len = sizeof(data)};
         struct spi_buf_set buf_set = {.buffers = &buffers, .count = 1};
 
@@ -180,186 +130,255 @@ static void send_data(uint8_t data)
         gpio_pin_set(cs, CS_PIN, 1);
 }
 
-static void read_busy(void)
+static void read_busy(const struct device *busy)
 {
-    printk("e-Paper busy\r\n");
-    int pin = gpio_pin_get(busy, BUSY_PIN);
+        printk("e-Paper busy\r\n");
+        int pin = gpio_pin_get(busy, BUSY_PIN);
 
-    while (pin > 0) {
+        while (pin > 0) {
             __ASSERT(pin >= 0, "Failed to get pin level");
             printk("wait %u", pin);
             k_sleep(K_MSEC(200));
             pin = gpio_pin_get(busy, BUSY_PIN);
-    }
-    printk("e-Paper busy release\r\n");
+        }
+        printk("e-Paper busy release\r\n");
 }
 
-static void EPD_2in7_SetLut(void)
+static void EPD_2in7_SetLut(const struct device *dc, const struct device *cs)
 {
     unsigned int count;
-    send_command(0x20); //vcom
+    send_command(dc, cs, 0x20); //vcom
     for(count = 0; count < 44; count++) {
-        send_data(EPD_2in7_lut_vcom_dc[count]);
+        send_data(dc, cs, EPD_2in7_lut_vcom_dc[count]);
     }
 
-    send_command(0x21); //ww --
+    send_command(dc, cs, 0x21); //ww --
     for(count = 0; count < 42; count++) {
-        send_data(EPD_2in7_lut_ww[count]);
+        send_data(dc, cs, EPD_2in7_lut_ww[count]);
     }
 
-    send_command(0x22); //bw r
+    send_command(dc, cs, 0x22); //bw r
     for(count = 0; count < 42; count++) {
-        send_data(EPD_2in7_lut_bw[count]);
+        send_data(dc, cs, EPD_2in7_lut_bw[count]);
     }
 
-    send_command(0x23); //wb w
+    send_command(dc, cs, 0x23); //wb w
     for(count = 0; count < 42; count++) {
-        send_data(EPD_2in7_lut_bb[count]);
+        send_data(dc, cs, EPD_2in7_lut_bb[count]);
     }
 
-    send_command(0x24); //bb b
+    send_command(dc, cs, 0x24); //bb b
     for(count = 0; count < 42; count++) {
-        send_data(EPD_2in7_lut_wb[count]);
+        send_data(dc, cs, EPD_2in7_lut_wb[count]);
     }
 }
 
-void EPD_2IN7_Display(const uint8_t *Image)
+void EPD_2IN7_Display(const struct device *busy, const struct device *dc, const struct device *cs,const uint8_t *Image)
 {
     uint16_t Width, Height;
     Width = (EPD_2IN7_WIDTH % 8 == 0)? (EPD_2IN7_WIDTH / 8 ): (EPD_2IN7_WIDTH / 8 + 1);
     Height = EPD_2IN7_HEIGHT;
 
-    send_command(0x10);
+    send_command(dc, cs, 0x10);
     for (uint16_t j = 0; j < Height; j++) {
         for (uint16_t i = 0; i < Width; i++) {
-            send_data(0XFF);
+            send_data(dc, cs, 0XFF);
         }
     }
 
-    send_command(0x13);
+    send_command(dc, cs, 0x13);
     for (uint16_t j = 0; j < Height; j++) {
         for (uint16_t i = 0; i < Width; i++) {
-            send_data(Image[i + j * Width]);
+            send_data(dc, cs, Image[i + j * Width]);
         }
     }
-    send_command(0x12);
-    read_busy();
+    send_command(dc, cs, 0x12);
+    k_msleep(2);
+    read_busy(busy);
 }
 
-void epd_init()
+void epd_init(const struct device *busy, const struct device *dc, const struct device *cs,const struct device *rst)
 {
-        gpio_pin_set(rst, RST_PIN, 0);
-        k_sleep(K_MSEC(10));
         gpio_pin_set(rst, RST_PIN, 1);
         k_sleep(K_MSEC(10));
+        gpio_pin_set(rst, RST_PIN, 0);
+        k_sleep(K_MSEC(10));
+        read_busy(busy);
         printk("Reset\n");
 
-        send_command(0x01); // POWER_SETTING
-        send_data(0x03); // VDS_EN, VDG_EN
-        send_data(0x00); // VCOM_HV, VGHL_LV[1], VGHL_LV[0]
-        send_data(0x2b); // VDH
-        send_data(0x2b); // VDL
-        send_data(0x09); // VDHR
+        send_command(dc, cs, 0x01); // POWER_SETTING
+        send_data(dc, cs, 0x03); // VDS_EN, VDG_EN
+        send_data(dc, cs, 0x00); // VCOM_HV, VGHL_LV[1], VGHL_LV[0]
+        send_data(dc, cs, 0x2b); // VDH
+        send_data(dc, cs, 0x2b); // VDL
+        send_data(dc, cs, 0x09); // VDHR
 
-        send_command(0x06);  // BOOSTER_SOFT_START
-        send_data(0x07);
-        send_data(0x07);
-        send_data(0x17);
+        send_command(dc, cs, 0x06);  // BOOSTER_SOFT_START
+        send_data(dc, cs, 0x07);
+        send_data(dc, cs, 0x07);
+        send_data(dc, cs, 0x17);
 
-        // Power optimization
-        send_command(0xF8);
-        send_data(0x60);
-        send_data(0xA5);
+        // read_busy(busy);
+        // // Power optimization
+        // send_command(dc, cs, 0xF8);
+        // send_data(dc, cs, 0x60);
+        // send_data(dc, cs, 0xA5);
+        //
+        // // Power optimization
+        // send_command(dc, cs, 0xF8);
+        // send_data(dc, cs, 0x89);
+        // send_data(dc, cs, 0xA5);
+        //
+        // // Power optimization
+        // send_command(dc, cs, 0xF8);
+        // send_data(dc, cs, 0x90);
+        // send_data(dc, cs, 0x00);
+        //
+        // // Power optimization
+        // send_command(dc, cs, 0xF8);
+        // send_data(dc, cs, 0x93);
+        // send_data(dc, cs, 0x2A);
+        //
+        // // Power optimization
+        // send_command(dc, cs, 0xF8);
+        // send_data(dc, cs, 0xA0);
+        // send_data(dc, cs, 0xA5);
+        //
+        // // Power optimization
+        // send_command(dc, cs, 0xF8);
+        // send_data(dc, cs, 0xA1);
+        // send_data(dc, cs, 0x00);
+        //
+        // // Power optimization
+        // send_command(dc, cs, 0xF8);
+        // send_data(dc, cs, 0x73);
+        // send_data(dc, cs, 0x41);
 
-        // Power optimization
-        send_command(0xF8);
-        send_data(0x89);
-        send_data(0xA5);
 
-        // Power optimization
-        send_command(0xF8);
-        send_data(0x90);
-        send_data(0x00);
+        send_command(dc, cs, 0x16); // PARTIAL_DISPLAY_REFRESH
+        send_data(dc, cs, 0x00);
 
-        // Power optimization
-        send_command(0xF8);
-        send_data(0x93);
-        send_data(0x2A);
+        send_command(dc, cs, 0x04); // POWER_ON
+        read_busy(busy);
 
-        // Power optimization
-        send_command(0xF8);
-        send_data(0xA0);
-        send_data(0xA5);
+        send_command(dc, cs, 0x00); // PANEL_SETTING
+        send_data(dc, cs, 0xBF); // KW-BF   KWR-AF    BWROTP 0f
 
-        // Power optimization
-        send_command(0xF8);
-        send_data(0xA1);
-        send_data(0x00);
+        send_command(dc, cs, 0x61);
+        send_data(dc, cs, 0x00);
+        send_data(dc, cs, 0xb0);       //176
+        send_data(dc, cs, 0x01);
+        send_data(dc, cs, 0x08);		//264
 
-        // Power optimization
-        send_command(0xF8);
-        send_data(0x73);
-        send_data(0x41);
+        send_command(dc, cs, 0x82);  // VCM_DC_SETTING_REGISTER
+        send_data(dc, cs, 0x28);
+        read_busy(busy);
 
-        send_command(0x16); // PARTIAL_DISPLAY_REFRESH
-        send_data(0x00);
+        send_command(dc, cs, 0x30); // PLL_CONTROL
+        send_data(dc, cs, 0x3A); // 3A 100HZ   29 150Hz 39 200HZ    31 171HZ
 
-        send_command(0x04); // POWER_ON
-        read_busy();
+        send_command(dc, cs, 0x50);  // VCM_DC_SETTING_REGISTER
+        send_data(dc, cs, 0x47);
 
-        send_command(0x00); // PANEL_SETTING
-        send_data(0xAF); // KW-BF   KWR-AF    BWROTP 0f
-        send_command(0x30); // PLL_CONTROL
-        send_data(0x3A); // 3A 100HZ   29 150Hz 39 200HZ    31 171HZ
-        send_command(0x82);  // VCM_DC_SETTING_REGISTER
-        send_data(0x12);
-
-        EPD_2in7_SetLut();
-
+        EPD_2in7_SetLut(dc, cs);
+        printk("EPD init done\n");
 }
 
-void epd_clear()
+void epd_clear(const struct device *busy, const struct device *dc, const struct device *cs)
 {
         uint16_t Width, Height;
         Width = (EPD_2IN7_WIDTH % 8 == 0)? (EPD_2IN7_WIDTH / 8 ): (EPD_2IN7_WIDTH / 8 + 1);
         Height = EPD_2IN7_HEIGHT;
 
-        send_command(0x10);
+        send_command(dc, cs, 0x10);
         for (uint16_t j = 0; j < Height; j++) {
         for (uint16_t i = 0; i < Width; i++) {
-            send_data(0XFF);
+            send_data(dc, cs, 0XFF);
         }
         }
 
-        send_command(0x13);
+        send_command(dc, cs, 0x13);
         for (uint16_t j = 0; j < Height; j++) {
         for (uint16_t i = 0; i < Width; i++) {
-            send_data(0XFF);
+            send_data(dc, cs, 0XFF);
         }
         }
 
-        send_command(0x12);
-        read_busy();
+        send_command(dc, cs, 0x12);
+        k_msleep(2);
+        read_busy(busy);
 }
 
-void epd_sleep(void)
+void epd_sleep(const struct device *dc, const struct device *cs)
 {
-    send_command(0X50);
-    send_data(0xf7);
-    send_command(0X02);  	//power off
-    send_command(0X07);  	//deep sleep
-    send_data(0xA5);
+    send_command(dc, cs, 0X50);
+    send_data(dc, cs, 0xf7);
+    send_command(dc, cs, 0X02);  	//power off
+    send_command(dc, cs, 0X07);  	//deep sleep
+    send_data(dc, cs, 0xA5);
 }
 
 void main(void)
 {
 	printk("EPD Example\n");
-	spi_init();
+        spi_dev = device_get_binding(SPI_DEV);
+
+        if (spi_dev == NULL) {
+                printk("Could not get %s device\n", SPI_DEV);
+                return;
+        }
+        spi_cfg.operation = SPI_OP_MODE_MASTER | SPI_WORD_SET(8);
+        spi_cfg.frequency = 4000000;
+        spi_cfg.slave = 0;
+        spi_cfg.cs = NULL;
+
+        printk("SPI Initialized\n");
+
+        busy = device_get_binding(BUSY_DEV);
+        if (busy == NULL) {
+                return;
+        }
+
+        rst = device_get_binding(RST_DEV);
+        if (rst == NULL) {
+                return;
+        }
+
+        dc = device_get_binding(DC_DEV);
+        if (dc == NULL) {
+                return;
+        }
+
+        cs = device_get_binding(CS_DEV);
+        if (cs == NULL) {
+                return;
+        }
+
+        gpio_pin_configure(rst, RST_PIN,
+               GPIO_OUTPUT_INACTIVE | RST_FLAGS);
+
+        gpio_pin_configure(dc, DC_PIN,
+               GPIO_OUTPUT_INACTIVE | DC_FLAGS);
+
+        gpio_pin_configure(busy, BUSY_PIN,
+               GPIO_INPUT | BUSY_FLAGS);
+
+        cs_ctrl.gpio_dev = cs;
+        if (!cs_ctrl.gpio_dev) {
+          printk("Unable to get SPI GPIO CS device");
+          return;
+        }
+
+        cs_ctrl.gpio_pin = CS_PIN;
+        cs_ctrl.gpio_dt_flags = CS_FLAGS;
+        cs_ctrl.delay = 0U;
+        spi_cfg.cs = &cs_ctrl;
+        printk("SPI Setup done\n");
 
         printk("e-Paper Init and Clear...\r\n");
-        epd_init();
+        epd_init(busy,dc,cs,rst);
 
-        epd_clear();
+        epd_clear(busy,dc,cs);
         k_msleep(500);
 
         //Create a new image cache
@@ -377,7 +396,7 @@ void main(void)
         Paint_SelectImage(BlackImage);
         Paint_Clear(WHITE);
         Paint_DrawBitMap(gImage_2in7);
-        EPD_2IN7_Display(BlackImage);
+        EPD_2IN7_Display(busy,dc,cs,BlackImage);
         k_msleep(500);
 
         //1.Select Image
@@ -406,14 +425,14 @@ void main(void)
         Paint_DrawString_CN(130, 20, "΢ѩ����", &Font24CN, WHITE, BLACK);
 
         printk("EPD_Display\r\n");
-        EPD_2IN7_Display(BlackImage);
+        EPD_2IN7_Display(busy,dc,cs,BlackImage);
         k_msleep(2000);
 
         printk("Clear...\r\n");
-        epd_clear();
+        epd_clear(busy,dc,cs);
 
         printk("Goto Sleep...\r\n");
-        epd_sleep();
+        epd_sleep(dc,cs);
 
         k_free(BlackImage);
         BlackImage = NULL;
