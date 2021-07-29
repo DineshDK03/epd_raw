@@ -96,10 +96,6 @@ static const unsigned char EPD_2in7_lut_wb[] = {
 
 static void send_command(const struct device *dc, const struct device *cs, uint8_t cmd)
 {
-        dc = device_get_binding(DC_DEV);
-        gpio_pin_configure(dc, DC_PIN,
-               GPIO_OUTPUT | DC_FLAGS);
-
         struct spi_buf buffers = {.buf = &cmd, .len = sizeof(cmd)};
         struct spi_buf_set buf_set = {.buffers = &buffers, .count = 1};
 
@@ -114,10 +110,6 @@ static void send_command(const struct device *dc, const struct device *cs, uint8
 
 static void send_data(const struct device *dc, const struct device *cs,uint8_t data)
 {
-        dc = device_get_binding(DC_DEV);
-        gpio_pin_configure(dc, DC_PIN,
-               GPIO_OUTPUT | DC_FLAGS);
-
         struct spi_buf buffers = {.buf = &data, .len = sizeof(data)};
         struct spi_buf_set buf_set = {.buffers = &buffers, .count = 1};
 
@@ -130,6 +122,19 @@ static void send_data(const struct device *dc, const struct device *cs,uint8_t d
         gpio_pin_set(cs, CS_PIN, 1);
 }
 
+static void read_data(const struct device *dc, const struct device *cs,uint8_t *data)
+{
+        struct spi_buf buffers = {.buf = data, .len = sizeof(data)};
+        struct spi_buf_set buf_set = {.buffers = &buffers, .count = 1};
+
+        gpio_pin_set(dc, DC_PIN, 1);
+        gpio_pin_set(cs, CS_PIN, 0);
+        if (spi_read(spi_dev, &spi_cfg, &buf_set)) {
+                printk("Error SPI read");
+                return;
+        }
+        gpio_pin_set(cs, CS_PIN, 1);
+}
 static void read_busy(const struct device *busy)
 {
         printk("e-Paper busy\r\n");
@@ -147,29 +152,29 @@ static void read_busy(const struct device *busy)
 static void EPD_2in7_SetLut(const struct device *dc, const struct device *cs)
 {
     unsigned int count;
-    send_command(dc, cs, 0x20); //vcom
+    send_command(dc, cs_ctrl.gpio_dev , 0x20); //vcom
     for(count = 0; count < 44; count++) {
-        send_data(dc, cs, EPD_2in7_lut_vcom_dc[count]);
+        send_data(dc, cs_ctrl.gpio_dev , EPD_2in7_lut_vcom_dc[count]);
     }
 
-    send_command(dc, cs, 0x21); //ww --
+    send_command(dc, cs_ctrl.gpio_dev , 0x21); //ww --
     for(count = 0; count < 42; count++) {
-        send_data(dc, cs, EPD_2in7_lut_ww[count]);
+        send_data(dc, cs_ctrl.gpio_dev , EPD_2in7_lut_ww[count]);
     }
 
-    send_command(dc, cs, 0x22); //bw r
+    send_command(dc, cs_ctrl.gpio_dev , 0x22); //bw r
     for(count = 0; count < 42; count++) {
-        send_data(dc, cs, EPD_2in7_lut_bw[count]);
+        send_data(dc, cs_ctrl.gpio_dev , EPD_2in7_lut_bw[count]);
     }
 
-    send_command(dc, cs, 0x23); //wb w
+    send_command(dc, cs_ctrl.gpio_dev , 0x23); //wb w
     for(count = 0; count < 42; count++) {
-        send_data(dc, cs, EPD_2in7_lut_bb[count]);
+        send_data(dc, cs_ctrl.gpio_dev , EPD_2in7_lut_bb[count]);
     }
 
-    send_command(dc, cs, 0x24); //bb b
+    send_command(dc, cs_ctrl.gpio_dev , 0x24); //bb b
     for(count = 0; count < 42; count++) {
-        send_data(dc, cs, EPD_2in7_lut_wb[count]);
+        send_data(dc, cs_ctrl.gpio_dev , EPD_2in7_lut_wb[count]);
     }
 }
 
@@ -179,108 +184,136 @@ void EPD_2IN7_Display(const struct device *busy, const struct device *dc, const 
     Width = (EPD_2IN7_WIDTH % 8 == 0)? (EPD_2IN7_WIDTH / 8 ): (EPD_2IN7_WIDTH / 8 + 1);
     Height = EPD_2IN7_HEIGHT;
 
-    send_command(dc, cs, 0x10);
+    send_command(dc, cs_ctrl.gpio_dev , 0x10);
     for (uint16_t j = 0; j < Height; j++) {
         for (uint16_t i = 0; i < Width; i++) {
-            send_data(dc, cs, 0XFF);
+            send_data(dc, cs_ctrl.gpio_dev , 0XFF);
         }
     }
 
-    send_command(dc, cs, 0x13);
+    send_command(dc, cs_ctrl.gpio_dev , 0x13);
     for (uint16_t j = 0; j < Height; j++) {
         for (uint16_t i = 0; i < Width; i++) {
-            send_data(dc, cs, Image[i + j * Width]);
+            send_data(dc, cs_ctrl.gpio_dev , Image[i + j * Width]);
         }
     }
-    send_command(dc, cs, 0x12);
+    send_command(dc, cs_ctrl.gpio_dev , 0x12);
     k_msleep(2);
     read_busy(busy);
+}
+
+void read_temp(const struct device *busy, const struct device *dc, const struct device *cs,const struct device *rst)
+{
+        uint8_t temp1, temp2;
+
+        gpio_pin_set(rst, RST_PIN, 1);
+        k_msleep(10);
+        gpio_pin_set(rst, RST_PIN, 0);
+        k_msleep(10);
+        read_busy(busy);
+        printk("Reset\n");
+
+        send_command(dc, cs_ctrl.gpio_dev , 0x04); // POWER_ON
+        k_msleep(100);
+        read_busy(busy);
+
+        send_command(dc, cs_ctrl.gpio_dev , 0x05);
+        read_busy(busy);
+
+        send_command(dc, cs_ctrl.gpio_dev , 0x41);
+        send_data(dc, cs_ctrl.gpio_dev , 0x01);
+
+        send_command(dc, cs_ctrl.gpio_dev , 0x41);
+        read_data(dc, cs_ctrl.gpio_dev , &temp1);
+        read_data(dc, cs_ctrl.gpio_dev , &temp2);
+
+        printk("%d ",temp1);
+        printk("%d ",temp2);
+
 }
 
 void epd_init(const struct device *busy, const struct device *dc, const struct device *cs,const struct device *rst)
 {
         gpio_pin_set(rst, RST_PIN, 1);
-        k_sleep(K_MSEC(10));
+        k_msleep(10);
         gpio_pin_set(rst, RST_PIN, 0);
-        k_sleep(K_MSEC(10));
+        k_msleep(10);
         read_busy(busy);
         printk("Reset\n");
 
-        send_command(dc, cs, 0x01); // POWER_SETTING
-        send_data(dc, cs, 0x03); // VDS_EN, VDG_EN
-        send_data(dc, cs, 0x00); // VCOM_HV, VGHL_LV[1], VGHL_LV[0]
-        send_data(dc, cs, 0x2b); // VDH
-        send_data(dc, cs, 0x2b); // VDL
-        send_data(dc, cs, 0x09); // VDHR
+        send_command(dc, cs_ctrl.gpio_dev , 0x01); // POWER_SETTING
+        send_data(dc, cs_ctrl.gpio_dev , 0x03); // VDS_EN, VDG_EN
+        send_data(dc, cs_ctrl.gpio_dev , 0x00); // VCOM_HV, VGHL_LV[1], VGHL_LV[0]
+        send_data(dc, cs_ctrl.gpio_dev , 0x2b); // VDH
+        send_data(dc, cs_ctrl.gpio_dev , 0x2b); // VDL
+        send_data(dc, cs_ctrl.gpio_dev , 0x09); // VDHR
 
-        send_command(dc, cs, 0x06);  // BOOSTER_SOFT_START
-        send_data(dc, cs, 0x07);
-        send_data(dc, cs, 0x07);
-        send_data(dc, cs, 0x17);
+        send_command(dc, cs_ctrl.gpio_dev , 0x06);  // BOOSTER_SOFT_START
+        send_data(dc, cs_ctrl.gpio_dev , 0x07);
+        send_data(dc, cs_ctrl.gpio_dev , 0x07);
+        send_data(dc, cs_ctrl.gpio_dev , 0x17);
 
-        // read_busy(busy);
-        // // Power optimization
-        // send_command(dc, cs, 0xF8);
-        // send_data(dc, cs, 0x60);
-        // send_data(dc, cs, 0xA5);
+        // Power optimization
+        // send_command(dc, cs_ctrl.gpio_dev , 0xF8);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x60);
+        // send_data(dc, cs_ctrl.gpio_dev , 0xA5);
         //
         // // Power optimization
-        // send_command(dc, cs, 0xF8);
-        // send_data(dc, cs, 0x89);
-        // send_data(dc, cs, 0xA5);
+        // send_command(dc, cs_ctrl.gpio_dev , 0xF8);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x89);
+        // send_data(dc, cs_ctrl.gpio_dev , 0xA5);
         //
         // // Power optimization
-        // send_command(dc, cs, 0xF8);
-        // send_data(dc, cs, 0x90);
-        // send_data(dc, cs, 0x00);
+        // send_command(dc, cs_ctrl.gpio_dev , 0xF8);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x90);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x00);
         //
         // // Power optimization
-        // send_command(dc, cs, 0xF8);
-        // send_data(dc, cs, 0x93);
-        // send_data(dc, cs, 0x2A);
+        // send_command(dc, cs_ctrl.gpio_dev , 0xF8);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x93);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x2A);
         //
         // // Power optimization
-        // send_command(dc, cs, 0xF8);
-        // send_data(dc, cs, 0xA0);
-        // send_data(dc, cs, 0xA5);
+        // send_command(dc, cs_ctrl.gpio_dev , 0xF8);
+        // send_data(dc, cs_ctrl.gpio_dev , 0xA0);
+        // send_data(dc, cs_ctrl.gpio_dev , 0xA5);
         //
         // // Power optimization
-        // send_command(dc, cs, 0xF8);
-        // send_data(dc, cs, 0xA1);
-        // send_data(dc, cs, 0x00);
+        // send_command(dc, cs_ctrl.gpio_dev , 0xF8);
+        // send_data(dc, cs_ctrl.gpio_dev , 0xA1);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x00);
         //
         // // Power optimization
-        // send_command(dc, cs, 0xF8);
-        // send_data(dc, cs, 0x73);
-        // send_data(dc, cs, 0x41);
+        // send_command(dc, cs_ctrl.gpio_dev , 0xF8);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x73);
+        // send_data(dc, cs_ctrl.gpio_dev , 0x41);
 
 
-        send_command(dc, cs, 0x16); // PARTIAL_DISPLAY_REFRESH
-        send_data(dc, cs, 0x00);
+        send_command(dc, cs_ctrl.gpio_dev , 0x16); // PARTIAL_DISPLAY_REFRESH
+        send_data(dc, cs_ctrl.gpio_dev , 0x00);
 
-        send_command(dc, cs, 0x04); // POWER_ON
+        send_command(dc, cs_ctrl.gpio_dev , 0x04); // POWER_ON
+        k_msleep(100);
         read_busy(busy);
 
-        send_command(dc, cs, 0x00); // PANEL_SETTING
-        send_data(dc, cs, 0xBF); // KW-BF   KWR-AF    BWROTP 0f
+        send_command(dc, cs_ctrl.gpio_dev , 0x00); // PANEL_SETTING
+        send_data(dc, cs_ctrl.gpio_dev , 0xAF); // KW-BF   KWR-AF    BWROTP 0f
 
-        send_command(dc, cs, 0x61);
-        send_data(dc, cs, 0x00);
-        send_data(dc, cs, 0xb0);       //176
-        send_data(dc, cs, 0x01);
-        send_data(dc, cs, 0x08);		//264
+        send_command(dc, cs_ctrl.gpio_dev , 0x61);
+        send_data(dc, cs_ctrl.gpio_dev , 0x00);
+        send_data(dc, cs_ctrl.gpio_dev , 0xb0);       //176
+        send_data(dc, cs_ctrl.gpio_dev , 0x01);
+        send_data(dc, cs_ctrl.gpio_dev , 0x08);		//264
 
-        send_command(dc, cs, 0x82);  // VCM_DC_SETTING_REGISTER
-        send_data(dc, cs, 0x28);
+        send_command(dc, cs_ctrl.gpio_dev , 0x82);  // VCM_DC_SETTING_REGISTER
+        send_data(dc, cs_ctrl.gpio_dev , 0x12);
         read_busy(busy);
 
-        send_command(dc, cs, 0x30); // PLL_CONTROL
-        send_data(dc, cs, 0x3A); // 3A 100HZ   29 150Hz 39 200HZ    31 171HZ
+        send_command(dc, cs_ctrl.gpio_dev , 0x30); // PLL_CONTROL
+        send_data(dc, cs_ctrl.gpio_dev , 0x3A); // 3A 100HZ   29 150Hz 39 200HZ    31 171HZ
+        k_msleep(2);
 
-        send_command(dc, cs, 0x50);  // VCM_DC_SETTING_REGISTER
-        send_data(dc, cs, 0x47);
-
-        EPD_2in7_SetLut(dc, cs);
+        EPD_2in7_SetLut(dc, cs_ctrl.gpio_dev );
         printk("EPD init done\n");
 }
 
@@ -290,32 +323,35 @@ void epd_clear(const struct device *busy, const struct device *dc, const struct 
         Width = (EPD_2IN7_WIDTH % 8 == 0)? (EPD_2IN7_WIDTH / 8 ): (EPD_2IN7_WIDTH / 8 + 1);
         Height = EPD_2IN7_HEIGHT;
 
-        send_command(dc, cs, 0x10);
-        for (uint16_t j = 0; j < Height; j++) {
-        for (uint16_t i = 0; i < Width; i++) {
-            send_data(dc, cs, 0XFF);
-        }
-        }
-
-        send_command(dc, cs, 0x13);
-        for (uint16_t j = 0; j < Height; j++) {
-        for (uint16_t i = 0; i < Width; i++) {
-            send_data(dc, cs, 0XFF);
-        }
-        }
-
-        send_command(dc, cs, 0x12);
         k_msleep(2);
+        send_command(dc, cs_ctrl.gpio_dev , 0x10);
+        for (uint16_t j = 0; j < Height; j++) {
+        for (uint16_t i = 0; i < Width; i++) {
+            send_data(dc, cs_ctrl.gpio_dev , 0XFF);
+        }
+        }
+
+        k_msleep(2);
+        send_command(dc, cs_ctrl.gpio_dev , 0x13);
+        for (uint16_t j = 0; j < Height; j++) {
+        for (uint16_t i = 0; i < Width; i++) {
+            send_data(dc, cs_ctrl.gpio_dev , 0XFF);
+        }
+        }
+        k_msleep(2);
+
+        send_command(dc, cs_ctrl.gpio_dev , 0x12);
+        k_msleep(200);
         read_busy(busy);
 }
 
 void epd_sleep(const struct device *dc, const struct device *cs)
 {
-    send_command(dc, cs, 0X50);
-    send_data(dc, cs, 0xf7);
-    send_command(dc, cs, 0X02);  	//power off
-    send_command(dc, cs, 0X07);  	//deep sleep
-    send_data(dc, cs, 0xA5);
+    send_command(dc, cs_ctrl.gpio_dev , 0X50);
+    send_data(dc, cs_ctrl.gpio_dev , 0xf7);
+    send_command(dc, cs_ctrl.gpio_dev , 0X02);  	//power off
+    send_command(dc, cs_ctrl.gpio_dev , 0X07);  	//deep sleep
+    send_data(dc, cs_ctrl.gpio_dev , 0xA5);
 }
 
 void main(void)
@@ -349,11 +385,6 @@ void main(void)
                 return;
         }
 
-        cs = device_get_binding(CS_DEV);
-        if (cs == NULL) {
-                return;
-        }
-
         gpio_pin_configure(rst, RST_PIN,
                GPIO_OUTPUT_INACTIVE | RST_FLAGS);
 
@@ -363,7 +394,7 @@ void main(void)
         gpio_pin_configure(busy, BUSY_PIN,
                GPIO_INPUT | BUSY_FLAGS);
 
-        cs_ctrl.gpio_dev = cs;
+        cs_ctrl.gpio_dev = device_get_binding(CS_DEV);
         if (!cs_ctrl.gpio_dev) {
           printk("Unable to get SPI GPIO CS device");
           return;
@@ -375,10 +406,16 @@ void main(void)
         spi_cfg.cs = &cs_ctrl;
         printk("SPI Setup done\n");
 
-        printk("e-Paper Init and Clear...\r\n");
-        epd_init(busy,dc,cs,rst);
+        k_msleep(100);
+        read_temp(busy,dc,cs_ctrl.gpio_dev ,rst);
 
-        epd_clear(busy,dc,cs);
+        k_msleep(100);
+
+        epd_sleep(dc, cs_ctrl.gpio_dev );
+        printk("e-Paper Init and Clear...\r\n");
+        epd_init(busy,dc,cs_ctrl.gpio_dev ,rst);
+
+        epd_clear(busy,dc,cs_ctrl.gpio_dev );
         k_msleep(500);
 
         //Create a new image cache
@@ -396,7 +433,7 @@ void main(void)
         Paint_SelectImage(BlackImage);
         Paint_Clear(WHITE);
         Paint_DrawBitMap(gImage_2in7);
-        EPD_2IN7_Display(busy,dc,cs,BlackImage);
+        EPD_2IN7_Display(busy,dc,cs_ctrl.gpio_dev ,BlackImage);
         k_msleep(500);
 
         //1.Select Image
@@ -425,14 +462,14 @@ void main(void)
         Paint_DrawString_CN(130, 20, "΢ѩ����", &Font24CN, WHITE, BLACK);
 
         printk("EPD_Display\r\n");
-        EPD_2IN7_Display(busy,dc,cs,BlackImage);
+        EPD_2IN7_Display(busy,dc,cs_ctrl.gpio_dev ,BlackImage);
         k_msleep(2000);
 
         printk("Clear...\r\n");
-        epd_clear(busy,dc,cs);
+        epd_clear(busy,dc,cs_ctrl.gpio_dev );
 
         printk("Goto Sleep...\r\n");
-        epd_sleep(dc,cs);
+        epd_sleep(dc,cs_ctrl.gpio_dev );
 
         k_free(BlackImage);
         BlackImage = NULL;
